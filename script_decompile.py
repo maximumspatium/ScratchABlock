@@ -25,6 +25,8 @@ def structure(cfg):
     def _(res):
         return 1 if res else 0
 
+    match_switch_btree(cfg)
+
     cnt = 1
     while cnt:
         cnt = 0

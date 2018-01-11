@@ -4,7 +4,7 @@ import logging
 from graph import Graph
 from core import *
 import cfgutils
-
+import dot
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +83,172 @@ def match_seq(cfg):
                 cfg.move_succ(succ, v)
                 cfg.remove_node(succ)
                 return True
+
+
+class Switch(BBlock):
+    def __init__(self, bstart, expr, cases, default):
+        super().__init__(bstart.addr)
+        self.expr = expr
+        self.cases = cases
+        self.default = default
+
+    def subblocks(self):
+        return self.cases + self.default
+
+    def __repr__(self):
+        return BBlock.__repr__(self)
+
+    def dump(self, stream, indent=0, printer=str):
+        self.write(stream, indent, "switch(%s) {" % self.expr)
+        # dump cases
+        for c in self.cases:
+            self.write(stream, indent + 1, "case %s:" % c.sel)
+            c.stmt.write(stream, indent + 2, printer)
+            if c.has_break:
+                self.write(stream, indent + 2, "break;")
+        self.write(stream, indent, "}")
+
+
+def match_switch_btree(cfg):
+    with open("ggrrff.dot", 'w') as df:
+            dot.dot(cfg, df, True, True)
+
+    tconds = {}
+
+    # collect CFG nodes whose reaching condition is
+    # a comparison with a constant. Group them according
+    # to their LHS expressions.
+    for v, _ in cfg.iter_nodes():
+        if cfg.degree_out(v) == 2:
+            a, _ = cfg.sorted_succ(v)
+            e1 = cfg.edge(v, a)
+            e1_cond = e1.get('cond')
+            if isinstance(e1_cond.expr.args[1], VALUE):
+                k = e1_cond.expr.args[0]
+                # WARNING: Dirty hack! remove TYPE cast if any
+                if isinstance(k, EXPR) and isinstance(k.args[0], TYPE):
+                    k = k.args[1]
+                if k not in tconds:
+                    tconds[k] = [(e1, v, a)]
+                else:
+                    tconds[k].append((e1, v, a))
+
+    # reject expressions with less than 3 comparisons
+    cand = dict(filter(lambda x: (len(x[1]) >= 3), tconds.items()))
+
+    # consider EXPR == VALUE to be 'case' candidates
+    cases = []
+    for key in cand.keys():
+        for val in cand[key]:
+            cond = val[0].get('cond')
+            if cond.expr.op == '==':
+                case_node = val[2]
+                cases.append((cond, case_node))
+
+        if len(cases) < 3:
+            return False
+
+        log.info("Found %s cases:", len(cases))
+        for c in cases:
+            log.info("Case candidate node %s, expression: %s", c[1], c[0])
+
+        # DFS over the switch tree and classify nodes into three categories:
+        # - search nodes participating in binary search
+        # - leaf nodes will become actual 'case' statements
+        # - condition-less nodes with only one successor will become
+        # 'default' candidates.
+        wl = []
+        def_nodes = []
+        search_nodes = []
+        leaf_nodes = []
+        for pvc in cand[key]:
+            if pvc[0].get('cond').expr.op != '==':
+                succs = cfg.sorted_succ(pvc[1])
+                wl.append((pvc[1], succs[0]))
+                wl.append((pvc[1], succs[1]))
+                break
+            else:
+                succs = cfg.sorted_succ(pvc[1])
+                search_nodes.append(pvc[1])
+                leaf_nodes.append(pvc[2])
+                for s in succs:
+                    wl.append((pvc[1], s))
+
+        while wl:
+            f, t = wl.pop(0)
+            edge = cfg.edge(f, t)
+            if f not in search_nodes:
+                search_nodes.append(f)
+            cond = edge.get('cond')
+            succs = cfg.sorted_succ(t)
+            if cond:
+                if cond.expr.op in ['<', '<=', '=>', '>']:
+                    wl.append((t, succs[0]))
+                    wl.append((t, succs[1]))
+                elif cond.expr.op == '==':
+                    if t not in leaf_nodes:
+                        leaf_nodes.append(t)
+                else:
+                    log.info("Huh?")
+            else:
+                if len(succs) == 1:
+                    if t not in search_nodes:
+                        search_nodes.append(t)
+                    n = succs[0]
+                    if n not in def_nodes:
+                        def_nodes.append(n)
+                    #log.info('Candidate default node: %s', n)
+                else:
+                    wl.append((t, succs[0]))
+                    wl.append((t, succs[1]))
+
+        if len(def_nodes) == 1:
+            log.info("Found 'default' node: %s", def_nodes[0])
+        else:
+            log.info("Ambiguous 'default' (found several nodes)", def_nodes)
+            #return False
+
+        #for n in search_nodes:
+        #    node = cfg.node(n)
+        #    log.info("Search node #%s, label: %s", n, node.get('val').label)
+
+        #for n in leaf_nodes:
+        #    node = cfg.node(n)
+        #    log.info("Leaf(case) node #%s, label: %s", n, node.get('val').label)
+
+        # construct 'case' tuples (sel, stmt, has_break)
+        ncases = []
+        for n in leaf_nodes:
+            for c in cand[key]:
+                if n == c[2]:
+                    edge = cfg.edge(c[1], c[2])
+                    cond = edge.get('cond')
+                    sel = cond.expr.args[1]
+                    ncases.append((sel, cfg.node(n).get('val'), True))
+                    break
+
+        # replace all related CFG nodes with a collapsed switch node
+        swstart = search_nodes[0]
+        for n in search_nodes:
+            if n != swstart:
+                cfg.remove_node(n)
+        #nb = split_bblock(cfg, swstart)
+        nb = swstart
+        for l in leaf_nodes:
+            cfg.add_edge(nb, l)
+
+        with open("ddbbgg.dot", 'w') as df:
+            dot.dot(cfg, df, True, True)
+
+        #newb = Switch(cfg.node(swstart).get('val'), cond.expr.args[0], ncases, False)
+        #cfg.add_node(swstart, val=newb)
+        #for n in search_nodes:
+        #    if n != swstart:
+        #        cfg.remove_node(n)
+        #for n in leaf_nodes:
+        #    cfg.remove_node(n)
+        #cfg.add_edge(swstart, def_nodes[0])
+        return True
 
 
 def match_if(cfg):
