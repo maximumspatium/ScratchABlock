@@ -645,8 +645,18 @@ class Inst:
             if args:
                 args = " " + args
             return s + self.op + args + tail
-        if self.op in ("goto", "call"):
+        if self.op == "goto":
             return s + "%s %s" % (self.op, self.args[0]) + tail
+        if self.op == "call":
+            mystr = s
+            for i,arg in enumerate(self.args):
+                if i == 0:
+                    mystr = mystr + str(arg) + "("
+                else:
+                    if i != 1:
+                        mystr = mystr + ", "
+                    mystr = mystr + str(arg)
+            return mystr + ")" + tail
         if self.op == "if":
             return s + "if %s goto %s" % (self.args[0], self.args[1]) + tail
 
