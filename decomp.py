@@ -453,3 +453,21 @@ def match_abnormal_sel(cfg):
             log.info("abnormal_sel: %s", v)
             split_node(cfg, v)
             return True
+
+
+def find_abnormal_sel(cfg):
+    # ALGO 1: check whether "if" branches are dominated by their headers
+    from xform_cfg import analyze_dom
+
+    analyze_dom(cfg)
+
+    for n, node in cfg.iter_nodes():
+        if cfg.degree_out(n) == 2:
+            succs = cfg.sorted_succ(n)
+            if not cfg.is_back_edge(n, succs[0]) and cfg.edge(n, succs[0]).get("cond") is not None:
+                true_node = cfg.node(succs[0])
+                false_node = cfg.node(succs[1])
+                if n not in true_node["dom"]:
+                    log.info("abnormal selection path found: %s -> %s" % (n, succs[0]))
+                if n not in false_node["dom"]:
+                    log.info("abnormal selection path found: %s -> %s" % (n, succs[1]))

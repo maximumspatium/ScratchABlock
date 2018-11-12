@@ -23,6 +23,8 @@ def dce(cfg):
 
 def structure(cfg):
 
+    find_abnormal_sel(cfg)
+
     def _(res):
         return 1 if res else 0
 
